@@ -1,0 +1,11 @@
+
+torch>=2.0
+torchvision>=0.15
+torchdiffeq
+pyyaml
+numpy
+scipy
+scikit-learn
+matplotlib
+seaborn
+pytorch-lightning>=2.0

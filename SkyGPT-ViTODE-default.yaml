@@ -1,0 +1,816 @@
+# ==============================================================================
+# SkyGPT-ViTODE Default Configuration
+# ==============================================================================
+# 
+# This configuration file defines all hyperparameters for training and evaluation
+# of the SkyGPT-ViTODE model for probabilistic ultra-short-term solar forecasting.
+#
+# Configuration Version: 1.1.0
+# Compatible with: SkyGPT-ViTODE config.py v1.1.0
+#
+# Usage:
+#   python train.py --config SkyGPT-ViTODE-default.yaml
+#   python train.py --config SkyGPT-ViTODE-default.yaml --override training.learning_rate=1e-4
+# ==============================================================================
+
+# Configuration metadata
+_config_version: "1.1.0"
+
+# ==============================================================================
+# Experiment Metadata
+# ==============================================================================
+experiment_name: "skygpt_vitode_default"
+description: >
+  SkyGPT-ViTODE: Enhanced probabilistic solar forecasting combining 
+  physics-constrained video prediction with Vision Transformer and Neural ODE 
+  for improved uncertainty quantification and temporal dynamics modeling.
+version: "1.0.0"
+tags:
+  - "solar-forecasting"
+  - "probabilistic"
+  - "skygpt"
+  - "neural-ode"
+  - "vision-transformer"
+
+# ==============================================================================
+# Data Configuration
+# ==============================================================================
+# Configuration for SKIPP'D dataset loading and preprocessing.
+# Dataset: Stanford SKy Images and Photovoltaic Power Generation Dataset
+# Reference: Nie et al., Solar Energy, Volume 255, 2023
+
+data:
+  # ---------------------------------------------------------------------------
+  # Dataset Paths
+  # ---------------------------------------------------------------------------
+  # Path to HDF5 data file containing aligned sky images and PV measurements
+  data_path: "./data/skippd/2017_2019_images_pv_processed.hdf5"
+  
+  # Directory for caching preprocessed data (cloud indices, statistics)
+  cache_dir: "./data/cache"
+  
+  # ---------------------------------------------------------------------------
+  # Sequence Configuration
+  # ---------------------------------------------------------------------------
+  # Total number of frames in each sequence
+  # Constraint: sequence_length = n_cond_frames + forecast_horizon
+  sequence_length: 16
+  
+  # Number of historical (conditioning) frames provided as input
+  n_cond_frames: 8
+  
+  # Number of future frames to predict
+  forecast_horizon: 8
+  
+  # Temporal stride between consecutive frames (minutes)
+  # SKIPP'D dataset uses 2-minute intervals
+  temporal_stride: 2
+  
+  # ---------------------------------------------------------------------------
+  # Image Configuration
+  # ---------------------------------------------------------------------------
+  # Target spatial resolution for input images
+  # Constraint: Must be positive and divisible by 8 (for patch-based processing)
+  resolution: 64
+  
+  # Number of color channels (3 for RGB)
+  # Valid values: 1 (grayscale) or 3 (RGB)
+  channels: 3
+  
+  # ---------------------------------------------------------------------------
+  # Data Splits
+  # ---------------------------------------------------------------------------
+  # Proportion of trainval data used for training
+  train_ratio: 0.88
+  
+  # Proportion of trainval data used for validation
+  val_ratio: 0.07
+  
+  # Proportion reserved for testing (from test group in HDF5)
+  test_ratio: 0.05
+  
+  # Explicit test period dates (ISO format: YYYY-MM-DD)
+  # Following SkyGPT paper: 5 cloudy days from Nov-Dec 2019
+  test_start_date: "2019-11-01"
+  test_end_date: "2019-12-31"
+  
+  # ---------------------------------------------------------------------------
+  # Sample Filtering
+  # ---------------------------------------------------------------------------
+  # Whether to filter for cloudy samples only (as in original SkyGPT paper)
+  cloudy_only: true
+  
+  # Cloud index threshold for cloudy classification
+  # Lower normalized red-blue ratio indicates cloudier conditions
+  # Range: (0, 1), typical value: 0.3
+  cloud_threshold: 0.3
+  
+  # ---------------------------------------------------------------------------
+  # DataLoader Configuration
+  # ---------------------------------------------------------------------------
+  # Batch size per GPU
+  # Effective batch size = batch_size × n_gpus × gradient_accumulation_steps
+  batch_size: 32
+  
+  # Number of worker processes for data loading
+  # Recommendation: 4 × n_gpus for optimal throughput
+  num_workers: 8
+  
+  # Whether to use pinned (page-locked) memory for faster GPU transfer
+  pin_memory: true
+  
+  # Number of batches to prefetch per worker
+  # Only used when num_workers > 0
+  prefetch_factor: 2
+  
+  # Whether to keep worker processes alive between epochs
+  # Reduces startup overhead but uses more memory
+  persistent_workers: true
+  
+  # Whether to drop incomplete final batch
+  # Recommended: true for stable batch normalization during training
+  drop_last: true
+  
+  # ---------------------------------------------------------------------------
+  # Data Augmentation
+  # ---------------------------------------------------------------------------
+  # Whether to apply data augmentation during training
+  use_augmentation: true
+  
+  # Probability of horizontal flip
+  # Sky images are symmetric with respect to horizontal reflection
+  horizontal_flip_prob: 0.5
+  
+  # Maximum rotation angle in degrees (±)
+  # Small rotations preserve horizon orientation
+  rotation_degrees: 15.0
+  
+  # Brightness jitter factor (additive)
+  # Simulates exposure variations
+  brightness_jitter: 0.1
+  
+  # Contrast jitter factor (multiplicative)
+  # Simulates atmospheric clarity variations
+  contrast_jitter: 0.1
+  
+  # ---------------------------------------------------------------------------
+  # Normalization
+  # ---------------------------------------------------------------------------
+  # Per-channel mean for image normalization
+  # Note: Using ImageNet statistics; consider dataset-specific values
+  # for sky imagery which has different color distribution
+  image_mean: [0.485, 0.456, 0.406]
+  
+  # Per-channel standard deviation for image normalization
+  image_std: [0.229, 0.224, 0.225]
+  
+  # Maximum PV output for normalization (kW)
+  # SKIPP'D dataset: 30 kW rooftop installation at Stanford
+  pv_max: 30.0
+  
+  # Minimum PV output for normalization (kW)
+  # Set to 0.0 for [0, 1] normalization
+  pv_min: 0.0
+
+
+# ==============================================================================
+# VQ-VAE Configuration
+# ==============================================================================
+# Vector Quantized Variational Autoencoder for discrete latent representation.
+# Converts continuous sky images to discrete tokens for transformer processing.
+
+vqvae:
+  # Dimensionality of codebook embeddings
+  embedding_dim: 256
+  
+  # Number of codes (vocabulary size) in the codebook
+  # Larger values increase expressivity but may reduce utilization
+  n_codes: 2048
+  
+  # Number of hidden channels in encoder/decoder
+  n_hiddens: 240
+  
+  # Number of residual layers in encoder/decoder
+  n_res_layers: 4
+  
+  # Spatial downsampling factors at each stage
+  # Total downsampling: product of factors (4×4×4 = 64)
+  # For 64×64 input: latent size = 64/64 = 1×1 per frame
+  # Constraint: Each factor must be a positive power of 2
+  downsample: [4, 4, 4]
+  
+  # Commitment loss coefficient (β in VQ-VAE paper)
+  # Balances encoder commitment to codebook entries
+  commitment_cost: 0.25
+  
+  # EMA decay rate for codebook updates
+  # Range: (0, 1), typical: 0.99
+  decay: 0.99
+  
+  # Small constant for numerical stability in EMA updates
+  epsilon: 1.0e-5
+  
+  # Codebook initialization strategy
+  # Options: "uniform", "normal", "kmeans"
+  codebook_init: "uniform"
+  
+  # Threshold for resetting dead codes (usage-based)
+  # Codes used less than threshold × average are candidates for reset
+  restart_threshold: 1.0
+  
+  # Path to pretrained VQ-VAE checkpoint
+  # Set to null for training from scratch
+  pretrained_path: null
+  
+  # Whether to freeze VQ-VAE weights during joint training
+  freeze_weights: true
+
+
+# ==============================================================================
+# Neural ODE Configuration
+# ==============================================================================
+# Neural Ordinary Differential Equation for modeling continuous temporal dynamics.
+# Provides smooth interpolation and physics-informed temporal evolution.
+
+neural_ode:
+  # ODE solver algorithm
+  # Options: "dopri5" (adaptive), "euler", "rk4", "adaptive_heun", "midpoint", "bosh3"
+  # "dopri5" recommended for accuracy; "euler" for speed
+  solver: "dopri5"
+  
+  # Relative tolerance for adaptive solvers
+  rtol: 1.0e-3
+  
+  # Absolute tolerance for adaptive solvers
+  atol: 1.0e-4
+  
+  # Whether to use adjoint method for memory-efficient backpropagation
+  # Trades computation for memory; essential for long sequences
+  adjoint: true
+  
+  # Maximum number of solver steps (prevents infinite loops)
+  max_num_steps: 1000
+  
+  # Hidden dimension of ODE function network
+  hidden_dim: 512
+  
+  # Number of layers in ODE function network
+  n_layers: 3
+  
+  # Activation function
+  # Options: "softplus", "tanh", "relu", "gelu", "silu", "elu"
+  # "softplus" recommended for smooth dynamics
+  activation: "softplus"
+  
+  # Number of integration time points
+  integration_times: 8
+  
+  # Integration time span [t_start, t_end]
+  # Normalized to [0, 1] for numerical stability
+  t_span: [0.0, 1.0]
+  
+  # ---------------------------------------------------------------------------
+  # Physics Constraints
+  # ---------------------------------------------------------------------------
+  # Whether to apply physics-based moment constraints
+  use_physics_constraint: true
+  
+  # Kernel size for moment constraint convolution
+  # Constraint: Must be odd and >= 3
+  physics_kernel_size: 7
+  
+  # Weight for physics constraint loss term
+  physics_weight: 0.01
+  
+  # Weight for kinetic energy regularization
+  # Encourages smooth trajectories in latent space
+  kinetic_energy_reg: 0.01
+  
+  # Weight for Jacobian regularization (stability)
+  # Set to 0.0 to disable
+  jacobian_reg: 0.0
+
+
+# ==============================================================================
+# Vision Transformer Configuration
+# ==============================================================================
+# Vision Transformer (ViT) for PV power prediction from video features.
+# Processes temporal sequences with spatial attention mechanisms.
+
+vit:
+  # Patch size for image tokenization
+  # Constraint: resolution must be divisible by patch_size
+  patch_size: 8
+  
+  # Embedding dimension
+  # Constraint: Must be divisible by n_heads
+  embed_dim: 384
+  
+  # Number of transformer encoder layers
+  depth: 6
+  
+  # Number of attention heads
+  # Constraint: embed_dim must be divisible by n_heads
+  n_heads: 6
+  
+  # MLP hidden dimension ratio (mlp_dim = embed_dim × mlp_ratio)
+  mlp_ratio: 4.0
+  
+  # Whether to include bias in QKV projections
+  qkv_bias: true
+  
+  # Dropout rate for attention weights
+  # Range: [0, 1)
+  attn_drop: 0.0
+  
+  # Dropout rate for projection layers
+  proj_drop: 0.0
+  
+  # Stochastic depth (drop path) rate
+  # Range: [0, 1)
+  drop_path: 0.1
+  
+  # Whether to use temporal attention across frames
+  use_temporal_attention: true
+  
+  # Number of temporal attention layers
+  temporal_depth: 2
+  
+  # Weight initialization scale
+  init_scale: 0.02
+  
+  # ---------------------------------------------------------------------------
+  # Output Configuration
+  # ---------------------------------------------------------------------------
+  # Output distribution type
+  # Options: "mdn" (mixture density), "gaussian", "deterministic"
+  # "mdn" recommended for capturing multimodal uncertainty
+  output_type: "mdn"
+  
+  # Number of mixture components (for MDN output)
+  # Only used when output_type = "mdn"
+  n_mixture_components: 5
+  
+  # Label smoothing factor for training stability
+  label_smoothing: 0.0
+  
+  # Weight decay coefficient (L2 regularization)
+  weight_decay: 0.05
+
+
+# ==============================================================================
+# Conformal Prediction Configuration
+# ==============================================================================
+# Conformal prediction for distribution-free uncertainty quantification.
+# Provides calibrated prediction intervals with coverage guarantees.
+
+conformal:
+  # Target coverage level (probability)
+  # Range: (0, 1), typical: 0.90 for 90% prediction intervals
+  coverage_level: 0.90
+  
+  # Proportion of data used for calibration
+  calibration_ratio: 0.15
+  
+  # Whether to use adaptive conformal prediction
+  # Adjusts intervals based on local difficulty
+  use_adaptive: true
+  
+  # Number of neighbors for adaptive methods
+  n_neighbors: 100
+  
+  # Multiple coverage levels for reliability diagram
+  coverage_levels: [0.80, 0.85, 0.90, 0.95]
+
+
+# ==============================================================================
+# Transformer Configuration
+# ==============================================================================
+# GPT-style transformer for autoregressive video prediction.
+# Generates future sky image tokens conditioned on historical frames.
+
+transformer:
+  # Hidden dimension of transformer
+  # Constraint: Must be divisible by n_heads
+  hidden_dim: 576
+  
+  # Number of attention heads
+  n_heads: 4
+  
+  # Number of transformer layers
+  n_layers: 8
+  
+  # General dropout rate
+  # Range: [0, 1)
+  dropout: 0.2
+  
+  # Attention-specific dropout rate
+  attn_dropout: 0.3
+  
+  # Embedding-specific dropout rate
+  embed_dropout: 0.1
+  
+  # Attention type
+  # Options: "full", "sparse", "linear"
+  attn_type: "full"
+  
+  # Whether to use class conditioning
+  class_cond: false
+  
+  # Dimension of class conditioning embedding
+  # Only used when class_cond = true
+  class_cond_dim: 0
+  
+  # Number of classes for conditioning
+  # Set to 0 for unconditional generation
+  n_classes: 0
+
+
+# ==============================================================================
+# Training Configuration
+# ==============================================================================
+# Hyperparameters for model training including optimization and scheduling.
+
+training:
+  # ---------------------------------------------------------------------------
+  # Optimizer Configuration
+  # ---------------------------------------------------------------------------
+  # Optimizer algorithm
+  # Options: "adam", "adamw", "sgd", "rmsprop"
+  # "adamw" recommended for transformers
+  optimizer: "adamw"
+  
+  # Base learning rate
+  # Will be scaled by gradient_accumulation_steps if using linear scaling
+  learning_rate: 3.0e-4
+  
+  # Weight decay coefficient (L2 regularization)
+  # Applied to all parameters except biases and LayerNorm
+  weight_decay: 0.01
+  
+  # Adam beta parameters [β1, β2]
+  # β1: exponential decay for first moment
+  # β2: exponential decay for second moment
+  betas: [0.9, 0.999]
+  
+  # Epsilon for numerical stability in optimizer
+  eps: 1.0e-8
+  
+  # ---------------------------------------------------------------------------
+  # Learning Rate Scheduling
+  # ---------------------------------------------------------------------------
+  # Scheduler type
+  # Options: "cosine", "step", "plateau", "warmup_cosine", "linear", "one_cycle"
+  scheduler: "warmup_cosine"
+  
+  # Number of warmup epochs
+  warmup_epochs: 5
+  
+  # Starting learning rate for warmup (fraction of learning_rate)
+  warmup_start_lr: 1.0e-6
+  
+  # Minimum learning rate at end of schedule
+  min_lr: 1.0e-6
+  
+  # ---------------------------------------------------------------------------
+  # Training Duration
+  # ---------------------------------------------------------------------------
+  # Maximum number of training epochs
+  max_epochs: 100
+  
+  # Maximum number of training steps (overrides max_epochs if set)
+  max_steps: null
+  
+  # ---------------------------------------------------------------------------
+  # Early Stopping
+  # ---------------------------------------------------------------------------
+  # Whether to use early stopping
+  early_stopping: true
+  
+  # Number of epochs without improvement before stopping
+  patience: 15
+  
+  # Minimum improvement required to reset patience counter
+  min_delta: 1.0e-4
+  
+  # Metric to monitor for early stopping
+  monitor_metric: "val_loss"
+  
+  # Optimization direction: "min" for loss, "max" for accuracy
+  monitor_mode: "min"
+  
+  # ---------------------------------------------------------------------------
+  # Gradient Handling
+  # ---------------------------------------------------------------------------
+  # Maximum gradient norm for clipping
+  gradient_clip_val: 1.0
+  
+  # Gradient clipping algorithm
+  # Options: "norm" (L2 norm), "value" (element-wise)
+  gradient_clip_algorithm: "norm"
+  
+  # Number of batches to accumulate before optimizer step
+  # Effective batch size = batch_size × n_gpus × gradient_accumulation_steps
+  gradient_accumulation_steps: 1
+  
+  # ---------------------------------------------------------------------------
+  # Mixed Precision Training
+  # ---------------------------------------------------------------------------
+  # Whether to use automatic mixed precision
+  use_amp: true
+  
+  # Data type for AMP
+  # Options: "float16", "bfloat16"
+  # "bfloat16" preferred on Ampere+ GPUs for stability
+  amp_dtype: "float16"
+  
+  # ---------------------------------------------------------------------------
+  # Distributed Training
+  # ---------------------------------------------------------------------------
+  # Whether to use distributed data parallel
+  distributed: true
+  
+  # Number of GPUs to use
+  n_gpus: 4
+  
+  # Whether to synchronize batch normalization across GPUs
+  sync_batchnorm: true
+  
+  # Whether to find unused parameters in DDP
+  # Required for some architectures with conditional paths
+  find_unused_parameters: true
+  
+  # ---------------------------------------------------------------------------
+  # Checkpointing
+  # ---------------------------------------------------------------------------
+  # Directory for saving checkpoints
+  checkpoint_dir: "./checkpoints"
+  
+  # Number of best checkpoints to keep
+  save_top_k: 3
+  
+  # Save checkpoint every N epochs (in addition to best)
+  save_every_n_epochs: 5
+  
+  # Whether to save the last checkpoint regardless of performance
+  save_last: true
+  
+  # Path to checkpoint for resuming training
+  # Set to null for training from scratch
+  resume_from_checkpoint: null
+  
+  # ---------------------------------------------------------------------------
+  # Reproducibility
+  # ---------------------------------------------------------------------------
+  # Random seed for reproducibility
+  seed: 42
+  
+  # Whether to use deterministic algorithms
+  # May reduce performance but ensures reproducibility
+  deterministic: true
+  
+  # Whether to enable cuDNN benchmark mode
+  # Set to false for reproducibility, true for speed
+  benchmark: false
+  
+  # ---------------------------------------------------------------------------
+  # Logging
+  # ---------------------------------------------------------------------------
+  # Log metrics every N training steps
+  log_every_n_steps: 50
+  
+  # Validation check interval (fraction of epoch or number of steps)
+  val_check_interval: 1.0
+
+
+# ==============================================================================
+# Loss Configuration
+# ==============================================================================
+# Weights for multi-task loss function components.
+
+loss:
+  # ---------------------------------------------------------------------------
+  # VQ-VAE Losses
+  # ---------------------------------------------------------------------------
+  # Weight for reconstruction loss (MSE or perceptual)
+  reconstruction_weight: 1.0
+  
+  # Weight for codebook/commitment loss
+  codebook_weight: 1.0
+  
+  # ---------------------------------------------------------------------------
+  # Transformer Losses
+  # ---------------------------------------------------------------------------
+  # Weight for next-token cross-entropy loss
+  cross_entropy_weight: 1.0
+  
+  # ---------------------------------------------------------------------------
+  # Physics Constraints
+  # ---------------------------------------------------------------------------
+  # Weight for moment constraint loss (mean, variance conservation)
+  moment_constraint_weight: 0.01
+  
+  # Weight for kinetic energy regularization
+  kinetic_energy_weight: 0.01
+  
+  # ---------------------------------------------------------------------------
+  # PV Prediction Losses
+  # ---------------------------------------------------------------------------
+  # Weight for PV MSE/NLL loss
+  pv_mse_weight: 1.0
+  
+  # Weight for Continuous Ranked Probability Score
+  # Proper scoring rule for probabilistic predictions
+  pv_crps_weight: 0.5
+  
+  # ---------------------------------------------------------------------------
+  # Joint Training
+  # ---------------------------------------------------------------------------
+  # Whether to train video prediction and PV prediction jointly
+  joint_training: true
+  
+  # Weight for PV feedback to video generation
+  # Encourages video features relevant for PV prediction
+  pv_feedback_weight: 0.1
+
+
+# ==============================================================================
+# Evaluation Configuration
+# ==============================================================================
+# Settings for model evaluation and metrics computation.
+
+evaluation:
+  # ---------------------------------------------------------------------------
+  # Probabilistic Metrics
+  # ---------------------------------------------------------------------------
+  # Whether to compute Continuous Ranked Probability Score
+  compute_crps: true
+  
+  # Whether to compute Winkler score for interval predictions
+  compute_winkler: true
+  
+  # Whether to compute reliability diagram
+  compute_reliability: true
+  
+  # Whether to compute sharpness (prediction interval width)
+  compute_sharpness: true
+  
+  # Whether to compute skill score relative to baselines
+  compute_skill_score: true
+  
+  # ---------------------------------------------------------------------------
+  # Baseline Comparisons
+  # ---------------------------------------------------------------------------
+  # Whether to compare against persistence baseline
+  compare_persistence: true
+  
+  # Whether to compare against climatology baseline
+  compare_climatology: true
+  
+  # ---------------------------------------------------------------------------
+  # Sampling Configuration
+  # ---------------------------------------------------------------------------
+  # Number of future samples for Monte Carlo estimation
+  n_future_samples: 50
+  
+  # ---------------------------------------------------------------------------
+  # Statistical Testing
+  # ---------------------------------------------------------------------------
+  # Number of bootstrap samples for confidence intervals
+  bootstrap_samples: 1000
+  
+  # Significance level for statistical tests
+  # Range: (0, 1), typical: 0.05 for 95% confidence
+  significance_level: 0.05
+  
+  # Whether to apply Bonferroni correction for multiple comparisons
+  use_bonferroni: true
+  
+  # ---------------------------------------------------------------------------
+  # Output Configuration
+  # ---------------------------------------------------------------------------
+  # Whether to save prediction arrays
+  save_predictions: true
+  
+  # Whether to save evaluation figures
+  save_figures: true
+  
+  # DPI for saved figures
+  figure_dpi: 300
+  
+  # Figure format
+  # Options: "pdf", "png", "svg", "eps"
+  # "pdf" recommended for publication
+  figure_format: "pdf"
+
+
+# ==============================================================================
+# Logging Configuration
+# ==============================================================================
+# Settings for experiment logging and monitoring.
+
+logging:
+  # Logging level for file output
+  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+  level: "INFO"
+  
+  # Logging level for console output
+  console_level: "INFO"
+  
+  # Whether to use Weights & Biases logging
+  use_wandb: false
+  
+  # W&B project name
+  wandb_project: "skygpt-vitode"
+  
+  # W&B entity (username or team)
+  wandb_entity: null
+  
+  # Whether to use TensorBoard logging
+  use_tensorboard: true
+
+
+# ==============================================================================
+# Path Configuration
+# ==============================================================================
+# Directory paths for project organization.
+
+# Project root directory
+project_root: "."
+
+# Directory for log files
+log_dir: "./logs"
+
+# Directory for evaluation results
+results_dir: "./results"
+
+# Directory for saved figures
+figures_dir: "./figures"
+
+
+# ==============================================================================
+# Hardware Configuration
+# ==============================================================================
+# Settings for hardware utilization (informational, detected at runtime).
+
+hardware:
+  # Expected GPU memory per device (GB)
+  # Used for batch size recommendations
+  gpu_memory_gb: 24
+  
+  # Whether to use TensorFloat-32 on Ampere GPUs
+  # Provides ~2x speedup with minimal precision loss
+  use_tf32: true
+
+
+# ==============================================================================
+# Ablation Study Presets
+# ==============================================================================
+# Quick reference for ablation configurations.
+# Use with: python train.py --ablation <name>
+#
+# Available presets:
+#   full_model          - Complete SkyGPT-ViTODE (this configuration)
+#   original_skygpt     - Baseline without ViT and Neural ODE
+#   no_neural_ode       - Without continuous dynamics
+#   no_physics          - Without moment constraints
+#   no_vit              - U-Net instead of ViT for PV prediction
+#   no_conformal        - Without conformal calibration
+#   no_joint_training   - Separate training phases
+#   gaussian_output     - Gaussian instead of MDN
+#   deterministic       - No uncertainty quantification
+#   vit_tiny            - Smaller ViT (192D, 4 layers)
+#   vit_small           - Medium ViT (256D, 6 layers)
+#   vit_large           - Larger ViT (768D, 12 layers)
+#   mdn_3               - 3 mixture components
+#   mdn_5               - 5 mixture components (default)
+#   mdn_7               - 7 mixture components
+#   mdn_10              - 10 mixture components
+#   solver_euler        - Euler ODE solver
+#   solver_rk4          - RK4 ODE solver
+#   solver_dopri5       - Dopri5 ODE solver (default)
+
+
+# ==============================================================================
+# Configuration Notes
+# ==============================================================================
+#
+# Key Constraints (validated by config.py):
+#   - sequence_length = n_cond_frames + forecast_horizon
+#   - resolution must be divisible by 8 and by vit.patch_size
+#   - vit.embed_dim must be divisible by vit.n_heads
+#   - transformer.hidden_dim must be divisible by transformer.n_heads
+#   - train_ratio + val_ratio + test_ratio ≈ 1.0
+#   - All dropout rates must be in [0, 1)
+#
+# Recommended Settings by GPU Memory:
+#   - 24GB (RTX 3090/4090): batch_size=32, resolution=64
+#   - 16GB (RTX 4080/A4000): batch_size=16, resolution=64
+#   - 12GB (RTX 3060): batch_size=8, resolution=64
+#   - 8GB (RTX 3070): batch_size=4, resolution=64 or batch_size=8, resolution=48
+#
+# For multi-GPU training:
+#   Effective batch size = batch_size × n_gpus × gradient_accumulation_steps
+#   Adjust learning_rate proportionally if changing effective batch size
+#
+# ==============================================================================
